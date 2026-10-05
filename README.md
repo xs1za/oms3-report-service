@@ -165,6 +165,21 @@ Consumer:
 
 - `operations.shift.status_changed` - изменение статуса смены; `OMS3` помечает report cache по `shift_id` как stale и обеспечивает идемпотентность по `event_id`.
 
+Ошибки обработки `operations.shift.status_changed` сохраняются в `problem_events`. Технические ошибки проходят RabbitMQ DLX/TTL retry: 5 минут, 15 минут, 1 час. После неуспешной попытки через 1 час событие переходит в `manual_review`. Бизнес-ошибки переходят в `pending`, ошибки контракта - в `dlq`.
+
+## Problem events API
+
+Для доступа требуется заголовок `X-Operational-Role: operations`.
+
+```http
+GET /admin/problem-events
+GET /admin/problem-events/{problemEventId}
+POST /admin/problem-events/{problemEventId}/reprocess
+POST /admin/problem-events/{problemEventId}/ignore
+POST /admin/problem-events/{problemEventId}/manual-review
+POST /admin/problem-events/{problemEventId}/dlq
+```
+
 ## Переменные окружения
 
 | Переменная | Значение по умолчанию | Назначение |
@@ -172,6 +187,14 @@ Consumer:
 | `SERVICE_NAME` | `OMS3` | Имя сервиса |
 | `KAFKA_BOOTSTRAP_SERVERS` | `kafka.oms.svc.cluster.local:9092` | Kafka bootstrap servers |
 | `KAFKA_SHIFT_STATUS_GROUP_ID` | `oms3.shift-status-cache` | Consumer group для `operations.shift.status_changed` |
+| `RABBITMQ_URL` | `amqp://oms:oms@rabbitmq.oms.svc.cluster.local:5672/%2F` | RabbitMQ connection URL |
+| `PROBLEM_EVENTS_RETRY_EXCHANGE` | `problem-events.retry.exchange` | Exchange retry problem events |
+| `PROBLEM_EVENTS_REPROCESS_EXCHANGE` | `problem-events.reprocess.exchange` | Exchange reprocess problem events |
+| `PROBLEM_EVENTS_RETRY_5M_QUEUE` | `problem-events.retry.5m` | Retry queue 5 минут |
+| `PROBLEM_EVENTS_RETRY_15M_QUEUE` | `problem-events.retry.15m` | Retry queue 15 минут |
+| `PROBLEM_EVENTS_RETRY_1H_QUEUE` | `problem-events.retry.1h` | Retry queue 1 час |
+| `PROBLEM_EVENTS_REPROCESS_QUEUE` | `problem-events.reprocess` | Очередь автоматической повторной обработки |
+| `PROBLEM_EVENTS_MANUAL_REPROCESS_QUEUE` | `problem-events.reprocess.manual` | Очередь ручной повторной обработки |
 
 ## Локальный запуск
 

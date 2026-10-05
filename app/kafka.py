@@ -19,7 +19,7 @@ def publish_event(topic: str, payload: dict[str, Any]) -> None:
         logger.exception("Failed to publish Kafka event to %s", topic)
 
 
-def consume_events(topic: str, group_id: str, handler: Callable[[dict[str, Any]], None]) -> None:
+def consume_events(topic: str, group_id: str, handler: Callable[..., None]) -> None:
     consumer = Consumer(
         {
             "bootstrap.servers": settings.kafka_bootstrap_servers,
@@ -41,7 +41,13 @@ def consume_events(topic: str, group_id: str, handler: Callable[[dict[str, Any]]
                 continue
             try:
                 payload = json.loads(message.value().decode("utf-8"))
-                handler(payload)
+                metadata = {
+                    "source_topic": message.topic(),
+                    "source_partition": message.partition(),
+                    "source_offset": message.offset(),
+                    "kafka_key": message.key().decode("utf-8") if message.key() else None,
+                }
+                handler(payload, metadata)
                 consumer.commit(message=message, asynchronous=False)
             except Exception:
                 logger.exception("Rejected Kafka event from %s", topic)
