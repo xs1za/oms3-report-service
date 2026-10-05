@@ -161,12 +161,17 @@ HTTP/1.1 204 No Content
 - `report.requested` - создан запрос на построение отчета.
 - `report.cancelled` - задача отчета отменена.
 
+Consumer:
+
+- `operations.shift.status_changed` - изменение статуса смены; `OMS3` помечает report cache по `shift_id` как stale и обеспечивает идемпотентность по `event_id`.
+
 ## Переменные окружения
 
 | Переменная | Значение по умолчанию | Назначение |
 | --- | --- | --- |
 | `SERVICE_NAME` | `OMS3` | Имя сервиса |
 | `KAFKA_BOOTSTRAP_SERVERS` | `kafka.oms.svc.cluster.local:9092` | Kafka bootstrap servers |
+| `KAFKA_SHIFT_STATUS_GROUP_ID` | `oms3.shift-status-cache` | Consumer group для `operations.shift.status_changed` |
 
 ## Локальный запуск
 
@@ -224,10 +229,3 @@ kubectl -n oms port-forward svc/oms3 8003:80
 ```text
 http://localhost:8003/docs
 ```
-
-## Дальнейшее развитие
-
-- Добавить постоянное хранилище статусов отчетов.
-- Добавить lightweight worker для построения отчетов через RabbitMQ. Kafka хранит события как durable event log в пределах настроенной retention policy.
-- Добавить форматы выгрузки: XLSX, CSV, PDF.
-- Добавить авторизацию через `OMS1`.

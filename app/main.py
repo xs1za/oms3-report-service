@@ -1,4 +1,6 @@
+import logging
 from datetime import datetime, timedelta, timezone
+from threading import Thread
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Response, status
@@ -6,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 from app.healthcheck.router import router as healthcheck_router
-from app.kafka import publish_event
+from app.kafka import consume_events, publish_event
 from app.settings import settings
 
 app = FastAPI(title="OMS3 Report Service", version="0.1.0", root_path=settings.root_path)
@@ -19,7 +21,11 @@ app.add_middleware(
 )
 app.include_router(healthcheck_router)
 
+logger = logging.getLogger(__name__)
+
 report_tasks: dict[str, dict] = {}
+report_cache_stale_by_shift: dict[str, dict] = {}
+processed_shift_status_events: set[str] = set()
 
 
 class ReportTaskCreate(BaseModel):
@@ -38,6 +44,38 @@ class ReportTaskCreate(BaseModel):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def handle_shift_status_changed(event: dict) -> None:
+    if event.get("event_type") != "operations.shift.status_changed":
+        raise ValueError("Unsupported event_type")
+    if event.get("schema_version") != 1:
+        raise ValueError("Unsupported schema_version")
+    event_id = event.get("event_id")
+    shift_id = event.get("shift_id")
+    if not event_id or not shift_id:
+        raise ValueError("event_id and shift_id are required")
+    if event_id in processed_shift_status_events:
+        logger.info("Skipping duplicate shift status event", extra={"event_id": event_id, "shift_id": shift_id})
+        return
+    report_cache_stale_by_shift[shift_id] = {
+        "shift_id": shift_id,
+        "stale": True,
+        "event_id": event_id,
+        "correlation_id": event.get("correlation_id"),
+        "marked_stale_at": utcnow(),
+    }
+    processed_shift_status_events.add(event_id)
+    logger.info("Marked report cache as stale", extra={"event_id": event_id, "shift_id": shift_id})
+
+
+def start_shift_status_consumer() -> None:
+    consume_events("operations.shift.status_changed", settings.kafka_shift_status_group_id, handle_shift_status_changed)
+
+
+@app.on_event("startup")
+def start_consumers() -> None:
+    Thread(target=start_shift_status_consumer, daemon=True).start()
 
 
 def serialize_task(task: dict) -> dict:
