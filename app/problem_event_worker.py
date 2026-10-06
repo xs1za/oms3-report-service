@@ -3,11 +3,12 @@ import time
 
 import pika
 
+from app.logging_config import configure_logging
 from app.main import process_shift_status_changed_event
 from app.problem_events import create_connection, declare_problem_events_topology, process_reprocess_message
 from app.settings import settings
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 

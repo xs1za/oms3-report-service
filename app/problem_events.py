@@ -155,7 +155,15 @@ def register_problem_event(event: dict[str, Any], error: EventProcessingError, c
         item.update({"status": "pending", "next_retry_at": None})
     else:
         item.update({"status": "dlq", "next_retry_at": None})
-    logger.error("Registered problem event", extra={"event_id": event_id, "problem_event_id": problem_event_id, "error_code": error.error_code})
+    logger.error(
+        "Registered problem event",
+        extra={
+            "event_id": event_id,
+            "problem_event_id": problem_event_id,
+            "error_code": error.error_code,
+            "consumer_service": consumer_service,
+        },
+    )
     return item
 
 
