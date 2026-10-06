@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.healthcheck.router import router as healthcheck_router
 from app.kafka import consume_events, publish_event
+from app.logging_config import configure_logging
 from app.problem_events import (
     EventProcessingError,
     enqueue_manual_reprocess,
@@ -18,6 +19,8 @@ from app.problem_events import (
     register_problem_event,
 )
 from app.settings import settings
+
+configure_logging()
 
 app = FastAPI(title="OMS3 Report Service", version="0.1.0", root_path=settings.root_path)
 app.add_middleware(
@@ -77,7 +80,10 @@ def process_shift_status_changed_event(event: dict) -> None:
     if event.get("reason") == "force_technical_error":
         raise EventProcessingError("technical", "temporary_dependency_error", "Temporary dependency error")
     if event_id in processed_shift_status_events:
-        logger.info("Skipping duplicate shift status event", extra={"event_id": event_id, "shift_id": shift_id})
+        logger.info(
+            "Skipping duplicate shift status event",
+            extra={"event_id": event_id, "correlation_id": event.get("correlation_id"), "shift_id": shift_id},
+        )
         return
     report_cache_stale_by_shift[shift_id] = {
         "shift_id": shift_id,
@@ -87,7 +93,10 @@ def process_shift_status_changed_event(event: dict) -> None:
         "marked_stale_at": utcnow(),
     }
     processed_shift_status_events.add(event_id)
-    logger.info("Marked report cache as stale", extra={"event_id": event_id, "shift_id": shift_id})
+    logger.info(
+        "Marked report cache as stale",
+        extra={"event_id": event_id, "correlation_id": event.get("correlation_id"), "shift_id": shift_id},
+    )
 
 
 def handle_shift_status_changed(event: dict, metadata: dict | None = None) -> None:
