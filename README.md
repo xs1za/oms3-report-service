@@ -9,6 +9,7 @@
 - Возврат `202 Accepted`, `Location` и `Retry-After` при запуске операции.
 - Получение состояния задачи отчета.
 - Получение ссылки на скачивание результата.
+- Формирование XLSX-отчета `shifts` по данным OMS5 за период `starts_at`.
 - Отмена задачи отчета.
 - Публикация события `report.requested` в Kafka.
 
@@ -75,6 +76,28 @@ Idempotency-Key: <uuid>
 }
 ```
 
+Для отчета по сменам используется `reportType=shifts`:
+
+```json
+{
+  "reportType": "shifts",
+  "filter": {
+    "startsAtFrom": "2026-10-01T00:00:00Z",
+    "startsAtTo": "2026-10-31T23:59:59Z"
+  },
+  "format": "xlsx"
+}
+```
+
+Правила `shifts`:
+
+- `startsAtFrom` и `startsAtTo` обязательны;
+- границы периода включительные;
+- период не должен превышать 366 календарных дней;
+- формат строго `xlsx`;
+- источник данных - `GET /internal/shifts` в OMS5;
+- готовый XLSX хранится 30 дней.
+
 Ответ `202 Accepted`:
 
 ```http
@@ -127,6 +150,22 @@ Authorization: Bearer <token>
 }
 ```
 
+Для `reportType=shifts` результат содержит локальный download endpoint и срок хранения 30 дней:
+
+```json
+{
+  "taskId": "tsk_123",
+  "status": "completed",
+  "progress": 100,
+  "result": {
+    "fileName": "shifts-tsk_123-20261001-20261031.xlsx",
+    "downloadUrl": "/api/v1/report-tasks/tsk_123/download",
+    "expiresAt": "2026-11-30T12:00:00Z",
+    "sizeBytes": 4096
+  }
+}
+```
+
 ### Скачать результат
 
 ```http
@@ -142,6 +181,14 @@ Authorization: Bearer <token>
   "expiresAt": "2026-09-12T04:50:00Z"
 }
 ```
+
+Для `reportType=shifts` endpoint возвращает XLSX-файл с MIME type:
+
+```text
+application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+```
+
+Если файл истек или был удален cleanup-логикой, endpoint возвращает `410 Gone`.
 
 ### Отменить задачу
 
@@ -195,6 +242,8 @@ POST /admin/problem-events/{problemEventId}/dlq
 | `PROBLEM_EVENTS_RETRY_1H_QUEUE` | `problem-events.retry.1h` | Retry queue 1 час |
 | `PROBLEM_EVENTS_REPROCESS_QUEUE` | `problem-events.reprocess` | Очередь автоматической повторной обработки |
 | `PROBLEM_EVENTS_MANUAL_REPROCESS_QUEUE` | `problem-events.reprocess.manual` | Очередь ручной повторной обработки |
+| `OMS5_INTERNAL_BASE_URL` | `http://oms5.oms.svc.cluster.local` | Base URL OMS5 для internal API смен |
+| `REPORT_STORAGE_DIR` | `/tmp/oms3-reports` | Локальная директория хранения сформированных report-файлов |
 
 ## Локальный запуск
 

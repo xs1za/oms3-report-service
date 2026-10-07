@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     problem_events_retry_1h_queue: str = "problem-events.retry.1h"
     problem_events_reprocess_queue: str = "problem-events.reprocess"
     problem_events_manual_reprocess_queue: str = "problem-events.reprocess.manual"
+    oms5_internal_base_url: str = "http://oms5.oms.svc.cluster.local"
+    report_storage_dir: str = "/tmp/oms3-reports"
 
 
 settings = Settings()
