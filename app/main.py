@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Thread
+from typing import Annotated
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -13,7 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.healthcheck.router import router as healthcheck_router
 from app.kafka import consume_events, publish_event
@@ -63,7 +64,9 @@ XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml
 
 
 class ReportTaskCreate(BaseModel):
-    report_type: str = Field(alias="reportType", examples=["orders"])
+    model_config = ConfigDict(populate_by_name=True)
+
+    report_type: Annotated[str, Field(alias="reportType", examples=["orders"])]
     filter: dict = Field(default_factory=dict)
     format: str = Field(default="xlsx", examples=["xlsx"])
 
