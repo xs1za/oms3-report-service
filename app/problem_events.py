@@ -1,6 +1,8 @@
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from threading import RLock
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +20,7 @@ RETRY_INTERVALS = [
 
 problem_events: dict[str, dict[str, Any]] = {}
 problem_events_by_event_id: dict[str, str] = {}
+store_lock = RLock()
 
 
 class EventProcessingError(Exception):
@@ -30,6 +33,42 @@ class EventProcessingError(Exception):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def json_default(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def store_path() -> Path:
+    return Path(settings.problem_events_store_path)
+
+
+def load_store() -> None:
+    path = store_path()
+    if not path.exists():
+        return
+    with store_lock:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            logger.exception("Failed to read problem events store", extra={"store_path": str(path)})
+            return
+        problem_events.clear()
+        problem_events.update(data.get("problem_events", {}))
+        problem_events_by_event_id.clear()
+        problem_events_by_event_id.update(data.get("problem_events_by_event_id", {}))
+
+
+def save_store() -> None:
+    path = store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with store_lock:
+        payload = {"problem_events": problem_events, "problem_events_by_event_id": problem_events_by_event_id}
+        tmp_path.write_text(json.dumps(payload, default=json_default, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
 
 
 def create_connection() -> pika.BlockingConnection:
@@ -102,6 +141,7 @@ def _source_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def register_problem_event(event: dict[str, Any], error: EventProcessingError, consumer_service: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    load_store()
     now = utcnow()
     event_id = event.get("event_id") or str(uuid4())
     problem_event_id = problem_events_by_event_id.get(event_id)
@@ -164,18 +204,23 @@ def register_problem_event(event: dict[str, Any], error: EventProcessingError, c
             "consumer_service": consumer_service,
         },
     )
+    save_store()
     return item
 
 
 def list_problem_events() -> list[dict[str, Any]]:
+    load_store()
     return list(problem_events.values())
 
 
 def get_problem_event(problem_event_id: str) -> dict[str, Any] | None:
+    load_store()
     return problem_events.get(problem_event_id)
 
 
 def mark_manual_status(problem_event_id: str, status: str, user: str, comment: str) -> dict[str, Any]:
+    if problem_event_id not in problem_events:
+        load_store()
     item = problem_events[problem_event_id]
     item.update(
         {
@@ -186,10 +231,13 @@ def mark_manual_status(problem_event_id: str, status: str, user: str, comment: s
             "next_retry_at": None,
         }
     )
+    save_store()
     return item
 
 
 def enqueue_manual_reprocess(problem_event_id: str, user: str, comment: str | None = None) -> dict[str, Any]:
+    if problem_event_id not in problem_events:
+        load_store()
     item = problem_events[problem_event_id]
     item.update(
         {
@@ -200,10 +248,13 @@ def enqueue_manual_reprocess(problem_event_id: str, user: str, comment: str | No
         }
     )
     publish_manual_reprocess(problem_event_id)
+    save_store()
     return item
 
 
 def reprocess_problem_event(problem_event_id: str, handler) -> dict[str, Any]:
+    if problem_event_id not in problem_events:
+        load_store()
     item = problem_events[problem_event_id]
     if item["status"] in {"resolved", "ignored", "dlq"}:
         return item
@@ -216,6 +267,7 @@ def reprocess_problem_event(problem_event_id: str, handler) -> dict[str, Any]:
             continue
         if other["source_offset"] < item["source_offset"] and other.get("status") not in {"resolved", "ignored", "dlq"}:
             item.update({"status": "pending", "error_code": "earlier_shift_event_unresolved", "error_message": "Earlier shift event is not resolved"})
+            save_store()
             return item
     item["status"] = "retrying"
     try:
@@ -223,6 +275,7 @@ def reprocess_problem_event(problem_event_id: str, handler) -> dict[str, Any]:
     except EventProcessingError as exc:
         return register_problem_event(item["payload"], exc, item["consumer_service"])
     item.update({"status": "resolved", "resolved_at": utcnow(), "resolved_by": "reprocessor", "next_retry_at": None})
+    save_store()
     return item
 
 

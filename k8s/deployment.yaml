@@ -1,3 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oms3-problem-events-pvc
+  namespace: oms
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,6 +34,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: oms3-config
+          volumeMounts:
+            - name: problem-events-store
+              mountPath: /data/problem-events
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -34,3 +49,38 @@ spec:
               port: 8000
             initialDelaySeconds: 15
             periodSeconds: 20
+      volumes:
+        - name: problem-events-store
+          persistentVolumeClaim:
+            claimName: oms3-problem-events-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oms3-problem-event-worker
+  namespace: oms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oms3-problem-event-worker
+  template:
+    metadata:
+      labels:
+        app: oms3-problem-event-worker
+    spec:
+      containers:
+        - name: oms3-problem-event-worker
+          image: oms3:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.problem_event_worker"]
+          envFrom:
+            - configMapRef:
+                name: oms3-config
+          volumeMounts:
+            - name: problem-events-store
+              mountPath: /data/problem-events
+      volumes:
+        - name: problem-events-store
+          persistentVolumeClaim:
+            claimName: oms3-problem-events-pvc

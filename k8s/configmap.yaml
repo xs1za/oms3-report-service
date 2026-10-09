@@ -7,3 +7,13 @@ data:
   SERVICE_NAME: OMS3
   ROOT_PATH: /oms3
   KAFKA_BOOTSTRAP_SERVERS: kafka.oms.svc.cluster.local:9092
+  KAFKA_SHIFT_STATUS_GROUP_ID: oms3.shift-status-cache
+  RABBITMQ_URL: amqp://oms:oms@rabbitmq.oms.svc.cluster.local:5672/%2F
+  PROBLEM_EVENTS_RETRY_EXCHANGE: problem-events.retry.exchange
+  PROBLEM_EVENTS_REPROCESS_EXCHANGE: problem-events.reprocess.exchange
+  PROBLEM_EVENTS_RETRY_5M_QUEUE: problem-events.retry.5m
+  PROBLEM_EVENTS_RETRY_15M_QUEUE: problem-events.retry.15m
+  PROBLEM_EVENTS_RETRY_1H_QUEUE: problem-events.retry.1h
+  PROBLEM_EVENTS_REPROCESS_QUEUE: problem-events.reprocess
+  PROBLEM_EVENTS_MANUAL_REPROCESS_QUEUE: problem-events.reprocess.manual
+  PROBLEM_EVENTS_STORE_PATH: /data/problem-events/oms3-problem-events.json
