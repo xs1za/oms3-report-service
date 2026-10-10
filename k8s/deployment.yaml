@@ -34,6 +34,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: oms3-config
+            - secretRef:
+                name: oms3-secret
+                optional: true
           volumeMounts:
             - name: problem-events-store
               mountPath: /data/problem-events
@@ -77,6 +80,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: oms3-config
+            - secretRef:
+                name: oms3-secret
+                optional: true
           volumeMounts:
             - name: problem-events-store
               mountPath: /data/problem-events

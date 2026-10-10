@@ -8,6 +8,8 @@ data:
   ROOT_PATH: /oms3
   KAFKA_BOOTSTRAP_SERVERS: kafka.oms.svc.cluster.local:9092
   KAFKA_SHIFT_STATUS_GROUP_ID: oms3.shift-status-cache
+  OMS1_AUTH_BASE_URL: http://oms1.oms.svc.cluster.local
+  SERVICE_CLIENT_ID: OMS3
   RABBITMQ_URL: amqp://oms:oms@rabbitmq.oms.svc.cluster.local:5672/%2F
   PROBLEM_EVENTS_RETRY_EXCHANGE: problem-events.retry.exchange
   PROBLEM_EVENTS_REPROCESS_EXCHANGE: problem-events.reprocess.exchange
