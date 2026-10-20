@@ -28,6 +28,7 @@ from app.problem_events import (
     register_problem_event,
 )
 from app.settings import settings
+from app.report_task_storage import report_task_storage
 
 configure_logging()
 
@@ -43,7 +44,6 @@ app.include_router(healthcheck_router)
 
 logger = logging.getLogger(__name__)
 
-report_tasks: dict[str, dict] = {}
 report_cache_stale_by_shift: dict[str, dict] = {}
 processed_shift_status_events: set[str] = set()
 
@@ -166,10 +166,8 @@ def shifts_report_file_name(task_id: str, starts_at_from: datetime, starts_at_to
 
 
 def build_shifts_report(task: dict) -> None:
-    task["status"] = "running"
-    task["progress"] = 25
-    task["startedAt"] = utcnow()
-    task["updatedAt"] = task["startedAt"]
+    worker_id = task["workerId"]
+    report_task_storage.update_running(task["id"], worker_id, {"progress": 25})
     starts_at_from = parse_datetime(task["parameters"]["filter"]["startsAtFrom"], "startsAtFrom")
     starts_at_to = parse_datetime(task["parameters"]["filter"]["startsAtTo"], "startsAtTo")
     logger.info("Started shifts XLSX report", extra={"task_id": task["id"], "startsAtFrom": utc_iso(starts_at_from), "startsAtTo": utc_iso(starts_at_to)})
@@ -180,40 +178,49 @@ def build_shifts_report(task: dict) -> None:
     file_path = report_storage_dir() / file_name
     build_xlsx(rows, file_path)
     completed_at = utcnow()
-    task.update(
+    result = {
+        "fileName": file_name,
+        "downloadUrl": f"/api/v1/report-tasks/{task['id']}/download",
+        "expiresAt": completed_at + timedelta(days=30),
+        "filePath": str(file_path),
+        "sizeBytes": file_path.stat().st_size,
+    }
+    updated = report_task_storage.update_running(
+        task["id"],
+        worker_id,
         {
             "status": "completed",
             "progress": 100,
             "reportId": task["reportId"] or f"rpt_{uuid4().hex[:12]}",
             "completedAt": completed_at,
-            "updatedAt": completed_at,
-            "result": {
-                "fileName": file_name,
-                "downloadUrl": f"/api/v1/report-tasks/{task['id']}/download",
-                "expiresAt": completed_at + timedelta(days=30),
-                "filePath": str(file_path),
-                "sizeBytes": file_path.stat().st_size,
-            },
-        }
+            "result": result,
+            "leaseUntil": completed_at,
+        },
     )
+    if updated is None:
+        raise RuntimeError("Report task lease expired or task was cancelled")
     logger.info("Completed shifts XLSX report", extra={"task_id": task["id"], "fileName": file_name, "row_count": len(shifts)})
 
 
 def process_report_task(task_id: str) -> None:
-    task = report_tasks.get(task_id)
+    worker_id = f"oms3-report-worker-{uuid4().hex}"
+    task = report_task_storage.get(task_id)
     if task is None or task["parameters"].get("reportType") != "shifts":
         return
+    claimed = report_task_storage.claim(task_id, worker_id, utcnow() + timedelta(seconds=settings.report_worker_lease_seconds))
+    if claimed is None:
+        return
     try:
-        build_shifts_report(task)
+        build_shifts_report(claimed)
     except Exception as exc:
         failed_at = utcnow()
-        task.update({"status": "failed", "progress": 100, "updatedAt": failed_at, "error": {"message": str(exc)}})
+        report_task_storage.update_running(task_id, worker_id, {"status": "failed", "progress": 100, "completedAt": failed_at, "error": {"message": str(exc)}})
         logger.exception("Failed shifts XLSX report", extra={"task_id": task_id})
 
 
 def cleanup_expired_reports() -> None:
     now = utcnow()
-    for task in report_tasks.values():
+    for task in report_task_storage.expired_results(now):
         result = task.get("result") or {}
         expires_at = result.get("expiresAt")
         if not expires_at or as_aware(expires_at) > now:
@@ -224,9 +231,7 @@ def cleanup_expired_reports() -> None:
             if path.exists():
                 path.unlink()
                 logger.info("Deleted expired report file", extra={"task_id": task["id"], "fileName": result.get("fileName"), "expiresAt": utc_iso(as_aware(expires_at))})
-        if task["status"] == "completed":
-            task["status"] = "expired"
-            task["updatedAt"] = now
+        report_task_storage.expire(task["id"])
 
 
 def require_operations_role(x_operational_role: str | None) -> None:
@@ -280,6 +285,7 @@ def start_shift_status_consumer() -> None:
 
 @app.on_event("startup")
 def start_consumers() -> None:
+    report_task_storage.migrate()
     Thread(target=start_shift_status_consumer, daemon=True).start()
 
 
@@ -349,7 +355,8 @@ def dlq_problem_event(problem_event_id: str, payload: ManualProblemEventAction, 
 
 
 def serialize_task(task: dict) -> dict:
-    return {key: value for key, value in task.items() if key != "parameters"} | {"parameters": task["parameters"]}
+    internal = {"idempotencyKey", "workerId", "leaseUntil"}
+    return {key: value for key, value in task.items() if key not in internal and key != "parameters"} | {"parameters": task["parameters"]}
 
 
 def refresh_task_status(task: dict) -> dict:
@@ -361,33 +368,34 @@ def refresh_task_status(task: dict) -> dict:
 
     elapsed = (utcnow() - task["createdAt"]).total_seconds()
     if elapsed < 5:
-        task["status"] = "queued"
-        task["progress"] = 0
+        return task
     elif elapsed < 15:
-        task["status"] = "running"
-        task["progress"] = 65
-        task["startedAt"] = task["startedAt"] or utcnow()
+        updated = report_task_storage.update(task["id"], {"status": "running", "progress": 65, "startedAt": task["startedAt"] or utcnow()})
+        return updated or task
     else:
         report_id = task["reportId"] or f"rpt_{uuid4().hex[:12]}"
-        task.update(
+        completed_at = utcnow()
+        updated = report_task_storage.update(
+            task["id"],
             {
                 "status": "completed",
                 "progress": 100,
                 "reportId": report_id,
-                "completedAt": utcnow(),
+                "completedAt": completed_at,
                 "result": {
                     "fileName": f"{task['parameters']['reportType']}-{task['id']}.{task['parameters']['format']}",
                     "downloadUrl": f"/api/v1/report-tasks/{task['id']}/download",
-                    "expiresAt": utcnow() + timedelta(hours=1),
+                    "expiresAt": completed_at + timedelta(hours=1),
                 },
-            }
+            },
         )
-    task["updatedAt"] = utcnow()
-    return task
+        return updated or task
 
 
 @app.post("/api/v1/report-tasks", status_code=status.HTTP_202_ACCEPTED)
-def start_report_generation(payload: ReportTaskCreate, response: Response) -> dict:
+def start_report_generation(payload: ReportTaskCreate, response: Response, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict:
+    if not isinstance(idempotency_key, str):
+        idempotency_key = None
     starts_at_from, starts_at_to = validate_shifts_report_request(payload)
     task_id = f"tsk_{uuid4().hex[:12]}"
     now = utcnow()
@@ -411,23 +419,24 @@ def start_report_generation(payload: ReportTaskCreate, response: Response) -> di
         "result": None,
         "error": None,
     }
-    report_tasks[task_id] = task
-    response.headers["Location"] = task["statusUrl"]
+    stored_task, created = report_task_storage.create_or_get(task, idempotency_key)
+    response.headers["Location"] = stored_task["statusUrl"]
     response.headers["Retry-After"] = "5"
-    event = {"task_id": task_id, "status": "queued", "request": task["parameters"], "created_at": now}
-    publish_event("report.requested", event)
-    logger.info("Created report task", extra={"task_id": task_id, "reportType": task["parameters"].get("reportType")})
-    if payload.report_type == "shifts":
-        Thread(target=process_report_task, args=(task_id,), daemon=True).start()
-    return {"taskId": task_id, "status": "queued", "statusUrl": task["statusUrl"], "createdAt": now}
+    if created:
+        event = {"task_id": task_id, "status": "queued", "request": task["parameters"], "created_at": now}
+        publish_event("report.requested", event)
+        logger.info("Created report task", extra={"task_id": task_id, "reportType": task["parameters"].get("reportType")})
+        if payload.report_type == "shifts":
+            Thread(target=process_report_task, args=(task_id,), daemon=True).start()
+    return {"taskId": stored_task["id"], "status": stored_task["status"], "statusUrl": stored_task["statusUrl"], "createdAt": stored_task["createdAt"]}
 
 
 @app.get("/api/v1/report-tasks/{task_id}")
 def get_report_task_status(task_id: str, response: Response) -> dict:
-    task = report_tasks.get(task_id)
+    task = report_task_storage.get(task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report task not found")
-    refresh_task_status(task)
+    task = refresh_task_status(task)
     if task["status"] in {"queued", "running"}:
         response.headers["Retry-After"] = "5"
     return serialize_task(task)
@@ -435,10 +444,10 @@ def get_report_task_status(task_id: str, response: Response) -> dict:
 
 @app.get("/api/v1/report-tasks/{task_id}/download")
 def download_report(task_id: str):
-    task = report_tasks.get(task_id)
+    task = report_task_storage.get(task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report task not found")
-    refresh_task_status(task)
+    task = refresh_task_status(task)
     if task["status"] == "expired":
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Report file expired")
     if task["status"] != "completed":
@@ -446,8 +455,7 @@ def download_report(task_id: str):
     if task["parameters"].get("reportType") == "shifts":
         file_path = Path(task["result"].get("filePath", ""))
         if not file_path.exists():
-            task["status"] = "expired"
-            task["updatedAt"] = utcnow()
+            report_task_storage.expire(task_id)
             raise HTTPException(status_code=status.HTTP_410_GONE, detail="Report file expired")
         return FileResponse(file_path, media_type=XLSX_CONTENT_TYPE, filename=task["result"]["fileName"])
     return {"downloadUrl": f"https://storage.example.local/reports/{task['result']['fileName']}", "expiresAt": task["result"]["expiresAt"]}
@@ -455,15 +463,19 @@ def download_report(task_id: str):
 
 @app.delete("/api/v1/report-tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def cancel_report_task(task_id: str) -> Response:
-    task = report_tasks.get(task_id)
+    task = report_task_storage.get(task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report task not found")
-    refresh_task_status(task)
+    task = refresh_task_status(task)
     if task["status"] == "completed":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Completed report task cannot be cancelled")
-    task["status"] = "cancelled"
-    task["updatedAt"] = utcnow()
-    publish_event("report.cancelled", {"task_id": task_id, "cancelled_at": task["updatedAt"]})
+    cancelled = report_task_storage.cancel(task_id)
+    if cancelled is None:
+        refreshed = report_task_storage.get(task_id)
+        if refreshed and refreshed["status"] == "completed":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Completed report task cannot be cancelled")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Report task cannot be cancelled")
+    publish_event("report.cancelled", {"task_id": task_id, "cancelled_at": cancelled["updatedAt"]})
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

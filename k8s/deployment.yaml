@@ -40,6 +40,8 @@ spec:
           volumeMounts:
             - name: problem-events-store
               mountPath: /data/problem-events
+            - name: reports-store
+              mountPath: /data/reports
           readinessProbe:
             httpGet:
               path: /health/ready
@@ -56,6 +58,9 @@ spec:
         - name: problem-events-store
           persistentVolumeClaim:
             claimName: oms3-problem-events-pvc
+        - name: reports-store
+          persistentVolumeClaim:
+            claimName: oms3-reports-data
 ---
 apiVersion: apps/v1
 kind: Deployment
