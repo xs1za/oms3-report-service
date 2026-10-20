@@ -19,3 +19,4 @@ data:
   PROBLEM_EVENTS_REPROCESS_QUEUE: problem-events.reprocess
   PROBLEM_EVENTS_MANUAL_REPROCESS_QUEUE: problem-events.reprocess.manual
   PROBLEM_EVENTS_STORE_PATH: /data/problem-events/oms3-problem-events.json
+  REPORT_STORAGE_DIR: /data/reports

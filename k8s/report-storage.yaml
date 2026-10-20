@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: oms3-reports-data-pv
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: oms3-reports-local
+  hostPath:
+    path: /mnt/oms-data/oms3-reports-data
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oms3-reports-data
+  namespace: oms
+spec:
+  volumeName: oms3-reports-data-pv
+  storageClassName: oms3-reports-local
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
